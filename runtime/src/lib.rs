@@ -212,10 +212,20 @@ impl pallet_tokens::Config for Runtime {
 	type TokenRandom = RandomnessCollectiveFlip;
 }
 
+parameter_types! {
+	pub const PriceFactor: u128 = 100_000_000;
+    pub const BlocksPerDay: u32 = 6 * 60 * 24;
+    pub const OpenedOrdersArrayCap: u8 = 20;
+    pub const ClosedOrdersArrayCap: u8 = 100;
+}
 impl pallet_trade::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
-	type Currency = Balances;
 	type TradeRandom = RandomnessCollectiveFlip;
+	type Price = u128;
+	type PriceFactor = PriceFactor;
+	type BlocksPerDay = BlocksPerDay;
+	type OpenedOrdersArrayCap = OpenedOrdersArrayCap;
+	type ClosedOrdersArrayCap = ClosedOrdersArrayCap;
 }
 
 construct_runtime!(

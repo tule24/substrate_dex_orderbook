@@ -22,7 +22,7 @@ pub mod pallet {
 	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
-	type Balance<T> = <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance; // Khai báo balance type
+	pub type Balance<T> = <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance; // Khai báo balance type
 
 	#[derive(Clone, Encode, Decode, PartialEq, RuntimeDebug, TypeInfo)]
 	#[scale_info(skip_type_params(T))]
@@ -145,8 +145,8 @@ pub mod pallet {
 			<Owners<T>>::insert(token_hash.clone(), sender.clone());
 
 			// update balance, freeBalance of user
-			Self::update_balance( sender.clone(), token_hash.clone(), total_supply, OptionBalance::Balance )?;
-			Self::update_balance( sender.clone(), token_hash.clone(), total_supply, OptionBalance::FreeBalance )?;
+			Self::update_balance( sender.clone(), token_hash.clone(), total_supply, OptionBalance::Balance );
+			Self::update_balance( sender.clone(), token_hash.clone(), total_supply, OptionBalance::FreeBalance );
 
 			// update storage OwnedTokensIndex, OwnedTokensTotal
 			let owned_token_index = Self::owned_token_total(sender.clone());
@@ -161,8 +161,9 @@ pub mod pallet {
 		// fn when transfer token
 		pub fn do_transfer( from: T::AccountId, to: T::AccountId, token_hash: T::Hash, amount: Balance<T>, memo: Option<Vec<u8>> ) -> DispatchResult {
 			// Check token_exist, sender_have_token
-			Self::check_token_exist(token_hash.clone())?;
-			Self::check_user_have_token(from.clone(), token_hash.clone())?;
+			ensure!(Self::tokens(token_hash.clone()).is_some(), <Error<T>>::NoMatchingToken);
+			ensure!(<FreeBalanceOf<T>>::contains_key(from.clone(), token_hash.clone()), <Error<T>>::SenderHaveNoToken);
+
 
 			// Don't know why use memo???
 			if let Some(memo) = memo {
@@ -178,44 +179,44 @@ pub mod pallet {
 			let new_to_free_balance = Self::check_balance_overflow( to.clone(), token_hash.clone(), amount, OptionBalance::FreeBalance )?;
 
 			// update balance, freeBalance of from_account and to_account
-			Self::update_balance( from.clone(), token_hash.clone(), new_from_balance, OptionBalance::Balance )?;
-			Self::update_balance( from.clone(), token_hash.clone(), new_from_free_balance, OptionBalance::FreeBalance )?;
-			Self::update_balance( to.clone(), token_hash.clone(), new_to_balance, OptionBalance::Balance )?;
-			Self::update_balance( to.clone(), token_hash.clone(), new_to_free_balance, OptionBalance::FreeBalance )?;
+			Self::update_balance( from.clone(), token_hash.clone(), new_from_balance, OptionBalance::Balance );
+			Self::update_balance( from.clone(), token_hash.clone(), new_from_free_balance, OptionBalance::FreeBalance );
+			Self::update_balance( to.clone(), token_hash.clone(), new_to_balance, OptionBalance::Balance );
+			Self::update_balance( to.clone(), token_hash.clone(), new_to_free_balance, OptionBalance::FreeBalance );
 
 			Self::deposit_event(Event::Transferred { from, to, token_hash, amount });
 			Ok(())
 		}
 
 		// fn when make an order
-		pub fn do_freeze( owner: T::AccountId, token_hash: T::Hash, amount: Balance<T> ) -> DispatchResult {
-			Self::check_token_exist(token_hash.clone())?;
-			Self::check_user_have_token(owner.clone(), token_hash.clone())?;
+		pub fn do_freeze( owner: T::AccountId, token_hash: T::Hash, amount: Balance<T> ) -> Result<(), Error<T>> {
+			ensure!(Self::tokens(token_hash.clone()).is_some(), <Error<T>>::NoMatchingToken);
+			ensure!(<FreeBalanceOf<T>>::contains_key(owner.clone(), token_hash.clone()), <Error<T>>::SenderHaveNoToken);
 
 			// check free_balance enough to freezed => free_balance reduced, freezed_balance increased
 			let new_free_balance = Self::check_balance_enough(owner.clone(), token_hash.clone(), amount, OptionBalance::FreeBalance )?;
 			let new_freezed_balance = Self::check_balance_overflow( owner.clone(), token_hash.clone(), amount, OptionBalance::FreezedBalance )?;
 
 			// update freeBalance, freezedBalance of user
-			Self::update_balance( owner.clone(), token_hash.clone(), new_free_balance, OptionBalance::FreeBalance )?;
-			Self::update_balance( owner.clone(), token_hash.clone(), new_freezed_balance, OptionBalance::FreezedBalance )?;
+			Self::update_balance( owner.clone(), token_hash.clone(), new_free_balance, OptionBalance::FreeBalance );
+			Self::update_balance( owner.clone(), token_hash.clone(), new_freezed_balance, OptionBalance::FreezedBalance );
 
 			Self::deposit_event(Event::Freezed { owner, token_hash, amount });
 			Ok(())
 		}
 
 		// fn when cancel an order
-		pub fn do_unfreeze( owner: T::AccountId, token_hash: T::Hash, amount: Balance<T> ) -> DispatchResult {
-			Self::check_token_exist(token_hash.clone())?;
-			Self::check_user_have_token(owner.clone(), token_hash.clone())?;
+		pub fn do_unfreeze( owner: T::AccountId, token_hash: T::Hash, amount: Balance<T> ) -> Result<(), Error<T>> {
+			ensure!(Self::tokens(token_hash.clone()).is_some(), <Error<T>>::NoMatchingToken);
+			ensure!(<FreeBalanceOf<T>>::contains_key(owner.clone(), token_hash.clone()), <Error<T>>::SenderHaveNoToken);
 
 			// contrast with do_free
 			let new_free_balance = Self::check_balance_overflow( owner.clone(), token_hash.clone(), amount, OptionBalance::FreeBalance )?;
 			let new_freezed_balance = Self::check_balance_enough( owner.clone(), token_hash.clone(), amount, OptionBalance::FreezedBalance )?;
 
 			// update freeBalance, freezedBalance of user
-			Self::update_balance( owner.clone(), token_hash.clone(), new_free_balance, OptionBalance::FreeBalance )?;
-			Self::update_balance( owner.clone(), token_hash.clone(), new_freezed_balance, OptionBalance::FreezedBalance )?;
+			Self::update_balance( owner.clone(), token_hash.clone(), new_free_balance, OptionBalance::FreeBalance );
+			Self::update_balance( owner.clone(), token_hash.clone(), new_freezed_balance, OptionBalance::FreezedBalance );
 
 			Self::deposit_event(Event::Unfreezed { owner, token_hash, amount });
 			Ok(())
@@ -223,29 +224,11 @@ pub mod pallet {
 
 		// fn make sure free_balance enough
 		pub fn ensure_free_balance( sender: T::AccountId, token_hash: T::Hash, amount: Balance<T> ) -> DispatchResult {
-			Self::check_token_exist(token_hash.clone())?;
-			Self::check_user_have_token(sender.clone(), token_hash.clone())?;
+			ensure!(Self::tokens(token_hash.clone()).is_some(), <Error<T>>::NoMatchingToken);
+			ensure!(<FreeBalanceOf<T>>::contains_key(sender.clone(), token_hash.clone()), <Error<T>>::SenderHaveNoToken);
 
 			let free_balance = Self::free_balance_of(sender, token_hash);
 			ensure!(free_balance >= amount, <Error<T>>::BalanceNotEnough);
-			Ok(())
-		}
-
-		// fn check_token_exist
-		fn check_token_exist(token_hash: T::Hash) -> Result<(), Error<T>> {
-			let token = Self::tokens(token_hash);
-			match token {
-				None => Err(<Error<T>>::NoMatchingToken),
-				_ => Ok(()),
-			}
-		}
-
-		// fn check_user_have_token
-		fn check_user_have_token( user: T::AccountId, token_hash: T::Hash ) -> Result<(), Error<T>> {
-			let token = <FreeBalanceOf<T>>::contains_key(user, token_hash);
-			if !token {
-				return Err(<Error<T>>::SenderHaveNoToken);
-			}
 			Ok(())
 		}
 
@@ -279,13 +262,12 @@ pub mod pallet {
 		}
 
 		// fn update balance depends on OptionBalance
-		fn update_balance( owner: T::AccountId, token_hash: T::Hash, balance: Balance<T>, option_balance: OptionBalance ) -> Result<(), Error<T>> {
+		fn update_balance( owner: T::AccountId, token_hash: T::Hash, balance: Balance<T>, option_balance: OptionBalance ){
 			match option_balance {
 				OptionBalance::Balance => <BalanceOf<T>>::insert(owner, token_hash, balance),
 				OptionBalance::FreeBalance => <FreeBalanceOf<T>>::insert(owner, token_hash, balance),
 				OptionBalance::FreezedBalance => <FreezedBalanceOf<T>>::insert(owner, token_hash, balance),
 			};
-			Ok(())
 		}
 	}
 }

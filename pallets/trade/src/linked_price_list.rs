@@ -4,15 +4,19 @@ use frame_support::{
     sp_runtime::{
         traits::{AtLeast32BitUnsigned, Bounded}
     },
-    sp_std::marker::PhantomData,
+    sp_std::{
+        marker::PhantomData,
+        borrow::Borrow
+    },
     inherent::Vec,
     StorageMap, RuntimeDebug, Parameter,
 };
+use scale_info::TypeInfo;
 pub use crate as trade;
 type OrderType = trade::OrderType;
 
 
-#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
 /* Ở đây dùng 3 generic type là P1, P2, P3.
  - P1: là order_hash hoặc token_hash => kiểu hash
  - P2: là mức giá => kiểu price
@@ -54,9 +58,9 @@ where
     // Mapping token_hash => mức giá => price_item tại mức giá đó
     S: StorageMap<(P1, Option<P2>), PriceItem<P1, P2, P3>, Query = Option<PriceItem<P1, P2, P3>>>,
     // P1, P2, P3 tương tự như struct PriceItem
-    P1: EncodeLike + Encode + Decode + Clone + Copy + PartialEq,
-    P2: Parameter + Default + Member + AtLeast32BitUnsigned + Bounded + Copy + EncodeLike + Encode + Decode,
-    P3: Parameter + Default + Member + AtLeast32BitUnsigned + Bounded + Copy
+    P1: EncodeLike + Encode + Decode + Clone + Copy + PartialEq + Borrow<<T as frame_system::Config>::Hash>,
+    P2: Parameter + Default + AtLeast32BitUnsigned + Bounded + Copy + EncodeLike + Encode + Decode,
+    P3: Parameter + Default + AtLeast32BitUnsigned + Bounded + Copy
 {
     /* fn new => init một linked_list cho mỗi token, cấu trúc sẽ là: 
         + bottom: PriceItem tại min_value của kiểu dữ liệu P2 => tương ứng là node_head trong linked_list
@@ -89,7 +93,7 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
     pub fn new(thash: P1) { // init a linked_price_list
         let de = Default::default();
         let bottom = <PriceItem<P1, P2, P3>>::new(
-            None, 
+            Some(P2::max_value()), 
             None, 
             Some(P2::min_value()),
             de,
@@ -97,7 +101,7 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
         );
         let top = <PriceItem<P1, P2, P3>>::new(
             None, 
-            None, 
+            Some(P2::min_value()), 
             Some(P2::max_value()), 
             de, 
             de
@@ -116,6 +120,13 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
         Self::write(thash, bottom.price, bottom);
         Self::write(thash, top.price, top);
         Self::write(thash, head.price, head);
+    }
+
+    pub fn read_head(thash: P1) -> PriceItem<P1, P2, P3>{
+        S::get((thash, None::<P2>)).unwrap_or_else(|| {
+            Self::new(thash);
+            S::get((thash, None::<P2>)).unwrap()
+        })
     }
 
     // fn dùng để insert các mapping
@@ -262,19 +273,14 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
         Ok(())
     }
 
-    // fn remove all => remove toàn bộ linked_list
-    // pub fn remove_all(thash: P1){
-    //     S::clear_prefix(thash, <u32>::max_value(), None);
-    // }
-
     // fn remove order theo thứ tự từ trên xuống tại 1 PriceItem khi khớp giá
     pub fn remove_orders_in_one_item(thash: P1, price: P2) -> DispatchResult {
         match S::get((thash, Some(price))) {
             Some(mut item) => {
                 while item.orders.len() > 0 {
-                    // let ohash = item.orders.get(0).ok_or("Cannot get order hash")?;
-                    // let order = <trade::Config<T>>::order(ohash.borrow()).ok_or("Cannot get order")?;
-                    // ensure!(order.is_finished(), "Try to remove not finished order");
+                    let ohash = item.orders.get(0).ok_or("Cannot get order hash")?;
+                    let order = trade::Orders::<T>::get(ohash.borrow()).ok_or("Cannot get order")?;
+                    ensure!(order.is_finished(), "Try to remove not finished order");
                     item.orders.remove(0);
                     Self::write(thash, Some(price), item.clone());
                 }
