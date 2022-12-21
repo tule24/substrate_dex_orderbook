@@ -8,7 +8,7 @@ pub mod pallet {
     use frame_support::{
         pallet_prelude::*,
         sp_runtime::{
-            traits::{Hash, Bounded, AtLeast32BitUnsigned, Zero, CheckedSub},
+            traits::{Hash, Bounded, AtLeast32Bit, Zero, CheckedSub},
             ArithmeticError
         },
         traits::{Randomness},
@@ -32,7 +32,7 @@ pub mod pallet {
 	#[pallet::config]
     pub trait Config: frame_system::Config + pallet_tokens::Config + Debug{
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>; 
-        type Price: Parameter + Default + Member + Bounded + AtLeast32BitUnsigned + Copy + From<u128> + Into<u128>;
+        type Price: Parameter + Default + Member + Bounded + AtLeast32Bit + Copy + From<u128> + Into<u128>;
         type TradeRandom: Randomness<Self::Hash, Self::BlockNumber>;
         type PriceFactor: Get<u128>;                // 100_000_000
         type BlocksPerDay: Get<u32>;                // 6 * 60 * 24
@@ -43,8 +43,11 @@ pub mod pallet {
     type Balance<T> = pallet_tokens::Balance<T>;
 
      /* struct TradePair để quản lý các cặp trade_pair
-        Ví dụ: cặp BTC/BUSD
-        => Trong đó, base_token là BTC, và quote_token là BUSD 
+     Ở trong program này thì cặp trade pair sẽ theo hướng stable_coin/coin_cần_mua
+        Ví dụ: cặp BUSD/BTC
+        => Trong đó, base_token là BUSD, và quote_token là BTC 
+        => Khi đặt lệnh BUY => là mình đang mua BTC
+        => Khi đặt lệnh SELL => là mình đang bán BTC
     */ 
     #[derive(Encode, Decode, Clone, PartialEq, Eq, TypeInfo, RuntimeDebug)]
 	#[scale_info(skip_type_params(T))]
@@ -132,8 +135,8 @@ pub mod pallet {
 
         buyer: T::AccountId,            // người bán => người sở hữu base_token
         seller: T::AccountId,           // người mua => người sở hữu quote_token
-        maker: T::AccountId,            // người đặt lệnh trước
-        taker: T::AccountId,            // người khớp lệnh
+        maker: T::AccountId,            // lệnh được đặt trước
+        taker: T::AccountId,            // lệnh đặt sau mà khớp lệnh vói maker
         otype: OrderType,               // taker order's type
         price: T::Price,                // maker order's price
         base_amount: Balance<T>,        // số lượng base_token giao dịch
@@ -151,7 +154,7 @@ pub mod pallet {
             let new_nonce = nonce.checked_add(1);
             if let Some(n) = new_nonce { <Nonce<T>>::put(n) }
 
-            // check thằng nào bán, thằng nào mua => otype của maker và taker phải khác nhau
+            // check lệnh nào bán, lệnh nào mua => Nếu taker là bán thì maker là mua và ngược lại
             let buyer;
             let seller;
             if taker_order.otype == OrderType::Buy {
@@ -300,6 +303,7 @@ pub mod pallet {
         fn remove_order(_param1: T::AccountId, _param2: T::Hash, _param3: T::Hash);
     } 
 
+    // Khi có trade thành công thì nó update thông tin trade đó vào các storage
     impl<T: Config> AddTrade for OrderOwnedTrades<T> {
         type A = T::Hash;
         type B = T::Hash;
@@ -348,6 +352,8 @@ pub mod pallet {
             Ok(())
         }
     }
+    
+    // Khi có một order được khởi tạo thì add nó vào opened_order
     impl<T: Config> AddOrder<T> for OwnedTPOpenedOrders<T> {
         fn add_order(account_id: T::AccountId, tp_hash: T::Hash, order_hash: T::Hash){
     
@@ -373,6 +379,8 @@ pub mod pallet {
             }
         }
     }
+    
+    // Khi một order được hoàn tất hoặc cancel thì mình xóa khỏi opened_order và thêm vào closed_order
     impl<T: Config> RemoveOrder<T> for OwnedTPOpenedOrders<T> {
         fn remove_order(account_id: T::AccountId, tp_hash: T::Hash, order_hash: T::Hash) {
     
@@ -485,13 +493,13 @@ pub mod pallet {
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        #[pallet::weight(100_000_000)]
+        #[pallet::weight(1_000_000)]
         pub fn create_trade_pair(origin: OriginFor<T>, base: T::Hash, quote: T::Hash) -> DispatchResult {
             let sender = ensure_signed(origin)?;
             Self::do_create_trade_pair(sender, base, quote)
         }
 
-        #[pallet::weight(100_000_000)]
+        #[pallet::weight(1_000_000)]
         pub fn create_limit_order(origin: OriginFor<T>, base: T::Hash, quote: T::Hash, otype: OrderType, price: T::Price, sell_amount: Balance<T>) -> DispatchResult {
             let sender = ensure_signed(origin)?;
             Self::do_create_limit_order(sender, base, quote, otype, price, sell_amount)
@@ -511,13 +519,14 @@ pub mod pallet {
         //     Self::do_create_limit_order(sender, base, quote, otype, price, sell_amount)
         // }
 
-        #[pallet::weight(100_000_000)]
+        #[pallet::weight(1_000_000)]
         pub fn cancel_limit_order(origin: OriginFor<T>, order_hash: T::Hash) -> DispatchResult {
             let sender = ensure_signed(origin)?;
             Self::do_cancel_limit_order(sender, order_hash)
         }
     }
 
+    // 2 fn trong hook chủ yếu là cập nhật thông tin tổng volume, giá cao nhất, giá thấp nhất => không ảnh hưởng đến hoạt động trade
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         // logic chạy trước khi executing transaction 
@@ -534,12 +543,12 @@ pub mod pallet {
             for i in 0..<TradePairsIndex<T>>::get() {
                 let tp_hash = <TradePairsHashByIndex<T>>::get(i).unwrap();
                 let mut tp = <TradePairs<T>>::get(tp_hash).unwrap();
-                let (sum_volume, _, _) = <TPTradeDataBucket<T>>::get((tp_hash, block_number - days)).unwrap(); // sum_of_trade_volume
+                let (sum_volume, _, _) = <TPTradeDataBucket<T>>::get((tp_hash, block_number - days)).unwrap_or((Default::default(), None, None)); // sum_of_trade_volume
                 tp.one_day_trade_volume -= sum_volume;
                 <TradePairs<T>>::insert(tp_hash, tp);
 
                 // update lại ds_high_price và ds_low_price
-                let (mut high_pri_vec, mut low_pri_vec) = <TPTradePriceBucket<T>>::get(tp_hash).unwrap();
+                let (mut high_pri_vec, mut low_pri_vec) = <TPTradePriceBucket<T>>::get(tp_hash).unwrap_or((Vec::<Option<T::Price>>::new(), Vec::<Option<T::Price>>::new()));
                 if high_pri_vec.len() > 0 {
                     high_pri_vec.remove(0);
                 }
@@ -665,15 +674,29 @@ pub mod pallet {
 
             let tp_hash = Self::ensure_trade_pair(base, quote)?;
 
+            /* check token của sender, giả sử cặp BUSD/BTC 
+             => Nếu Buy  => sender phải có BUSD
+             => Nếu Sell => sender phải có BTC
+            */ 
             let op_token_hash;
             match otype {
                 OrderType::Buy => op_token_hash = base,
                 OrderType::Sell => op_token_hash = quote
             };
 
+            /* Ở đây 1 giao dịch sẽ được hiểu là mình đang bán token này và mua token kia 
+                Ví dụ: Cặp BUSD/BTC
+                => Đặt lệnh BUY  => mình đang bán BUSD, và mua BTC
+                => Đặt lệnh SELL => mình đang bán BTC, và mua BUSD
+                
+                Nên trong 1 LimitOrder luôn có sell_amount và buy_amount, trong đó:
+                => sell_amount: là số lượng token mình đang bán 
+                => buy_amount: là số lượng token mình đang mua
+            */ 
             let mut order = LimitOrder::new(base, quote, sender.clone(), price, sell_amount, buy_amount, otype);
             let hash = order.hash;
 
+            // Check số dư và đóng băng số dư của sender
             pallet_tokens::Pallet::<T>::ensure_free_balance(sender.clone(), op_token_hash, sell_amount)?;
             pallet_tokens::Pallet::<T>::do_freeze(sender.clone(), op_token_hash, sell_amount)?;
             Orders::insert(hash, order.clone());
@@ -763,15 +786,15 @@ pub mod pallet {
             }
     
             let tp = Self::trade_pairs(tp_hash).ok_or(<Error<T>>::NoMatchingTradePair)?;
-            let give: T::Hash;
-            let have: T::Hash;
+            let give: T::Hash; // token bán
+            let have: T::Hash; // token mua
     
             match otype {
-                OrderType::Buy => {
+                OrderType::Buy => { // nếu lệnh mua thì là mình sẽ bán BUSD và thu về BTC
                     give = tp.base;
                     have = tp.quote;
                 },
-                OrderType::Sell => {
+                OrderType::Sell => { // nếu lệnh bán thì là mình sẽ bán BTC và thu về BUSD
                     give = tp.quote;
                     have = tp.base;
                 },
@@ -781,7 +804,8 @@ pub mod pallet {
                 if order.status == OrderStatus::Filled {
                     break;
                 }
-    
+                
+                // Ở đây lấy next_match_price của !otype => bởi vì lệnh bán mình phải so với các item_price ở list mua thì mới check khớp lệnh được và ngược lại
                 let item_price = Self::next_match_price(&head, !otype);
     
                 if item_price == end_item_price {
@@ -794,6 +818,7 @@ pub mod pallet {
                     break
                 }
     
+                // Lúc này item_price này đã khớp với order_price => lấy Price_item tại mức giá này ra và check list order
                 let item = <LinkedItemList<T>>::get((tp_hash, Some(item_price))).ok_or(<Error<T>>::OrderMatchGetLinkedListItemError)?;
                 for ohash in item.orders.iter() {
     
@@ -804,11 +829,11 @@ pub mod pallet {
                     let give_qty: Balance<T>;
                     let have_qty: Balance<T>;
                     match otype {
-                        OrderType::Buy => {
+                        OrderType::Buy => { // nếu lệnh mua thì là mình sẽ bán BUSD và thu về BTC
                             give_qty = base_qty;
                             have_qty = quote_qty;
                         },
-                        OrderType::Sell => {
+                        OrderType::Sell => { // nếu lệnh bán thì là mình sẽ bán BTC và thu về BUSD
                             give_qty = quote_qty;
                             have_qty = base_qty;
                         },
@@ -919,6 +944,10 @@ pub mod pallet {
             Ok(())
         }
 
+        /* fn đảm bảo amount_base_token khớp với amount_quote_token để đáp ứng được 1 giao dịch
+            ví dụ: 1 BTC = 20 BUSD hoặc ngược lại
+            ở đây sẽ check tương ứng với mức giá đặt ra thì sẽ tương ứng với bao nhiêu
+        */ 
         fn ensure_counterparty_amount_bounds(otype: OrderType, price: T::Price, amount: Balance<T>) -> Result<Balance<T>, Error<T>> {
             let price_u256 = U256::from(Self::into_128(price)?);
             let amount_u256 = U256::from(Self::into_128(amount)?);
@@ -966,6 +995,7 @@ pub mod pallet {
             TryFrom::<u128>::try_from(input).map_err(|_| <Error<T>>::NumberCastError.into())
         }
     
+        // fn này để tính toán lại số token_base và quote sau khi khớp lệnh giao dịch: maker là lệnh tạo trước, taker là lệnh tạo sau
         fn calculate_ex_amount(maker_order: &LimitOrder<T>, taker_order: &LimitOrder<T>) -> Result<(Balance<T>, Balance<T>), Error<T>> {
             let buyer_order;
             let seller_order;
@@ -1030,6 +1060,18 @@ pub mod pallet {
             }
         }
         
+        /* fn lấy price_matched tiếp theo
+            Trong fn order_match sẽ check giá trị trả về từ hàm này và lấy toán tử ! của nó
+            Giả sử, có 1 lệnh mua tại giá 2$, xong bắt đầu có 1 lệnh bán tại giá 2$ 
+            => order_price: 2$, otype: Sell, price_item_price: 2$
+            => fn này sẽ trả về true => tiếp tục loop trong fn order_match
+
+            Giả sử, có 1 lệnh mua tại giá 2$, xong bắt đầu có 1 lệnh bán tại giá 3$
+            => order_price: 3$, otype: Sell, price_item_price: 2$
+            => fn này sẽ trả về false => break loop trong fn order_match
+
+            => Mục đích của hàm này là check giá khớp lệnh tiếp theo nếu khớp thì trả về true còn ko thì trả về false
+         */
         fn price_matched(order_price: T::Price, otype: OrderType, price_item_price: T::Price) -> bool {
             match otype {
                 OrderType::Sell => order_price <= price_item_price,
@@ -1045,7 +1087,7 @@ pub mod pallet {
             tp.latest_matched_price = Some(price);
 
             // get data_bucket và update thông tin
-            let (mut sum_volume, mut highest_price, mut lowest_pricce) = <TPTradeDataBucket<T>>::get((tp_hash, frame_system::Pallet::<T>::block_number())).ok_or(<Error<T>>::DataBucketOfTradePairNotExist)?;
+            let (mut sum_volume, mut highest_price, mut lowest_pricce) = <TPTradeDataBucket<T>>::get((tp_hash, frame_system::Pallet::<T>::block_number())).unwrap_or((Default::default(), None, None));
             sum_volume += amount;
 
             match highest_price {
@@ -1075,5 +1117,6 @@ pub mod pallet {
 
             Ok(())
         }
+    
     }
 }
