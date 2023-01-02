@@ -105,10 +105,10 @@ pub mod pallet {
 	#[pallet::error]
 	pub enum Error<T> {
 		NoMatchingToken,            // There is no match token
+		MustNotTransferYourself,            // There is no match token
 		BalanceNotEnough,           // The balance is not enough
 		AmountOverFlow,             // Amount overflow
 		SenderHaveNoToken,          // Sender does not have token
-		MemoLengthExceedLimitation, // Memo length exceed limitation
 	}
 
 	#[pallet::call]
@@ -120,9 +120,10 @@ pub mod pallet {
 		}
 
 		#[pallet::weight(100)] // fn transfer a token 
-		pub fn transfer( origin: OriginFor<T>, to: T::AccountId, token_hash: T::Hash, amount: Balance<T>, memo: Option<Vec<u8>> ) -> DispatchResult {
+		pub fn transfer( origin: OriginFor<T>, to: T::AccountId, token_hash: T::Hash, amount: Balance<T> ) -> DispatchResult {
 			let from = ensure_signed(origin)?;
-			Self::do_transfer(from, to, token_hash, amount, memo)
+			ensure!(from != to, <Error<T>>::MustNotTransferYourself);
+			Self::do_transfer(from, to, token_hash, amount)
 		}
 	}
 
@@ -159,16 +160,10 @@ pub mod pallet {
 		}
 
 		// fn when transfer token
-		pub fn do_transfer( from: T::AccountId, to: T::AccountId, token_hash: T::Hash, amount: Balance<T>, memo: Option<Vec<u8>> ) -> DispatchResult {
+		pub fn do_transfer( from: T::AccountId, to: T::AccountId, token_hash: T::Hash, amount: Balance<T>) -> DispatchResult {
 			// Check token_exist, sender_have_token
 			ensure!(Self::tokens(token_hash.clone()).is_some(), <Error<T>>::NoMatchingToken);
 			ensure!(<FreeBalanceOf<T>>::contains_key(from.clone(), token_hash.clone()), <Error<T>>::SenderHaveNoToken);
-
-
-			// Don't know why use memo???
-			if let Some(memo) = memo {
-				ensure!(memo.len() <= 512, <Error<T>>::MemoLengthExceedLimitation);
-			}
 
 			// check from_account enough balance and subtract it => balance, freeBalance is reduced
 			let new_from_balance = Self::check_balance_enough( from.clone(), token_hash.clone(), amount, OptionBalance::Balance )?;

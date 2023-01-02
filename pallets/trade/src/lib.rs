@@ -80,6 +80,12 @@ pub mod pallet {
         }
     }
 
+    #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, TypeInfo, RuntimeDebug)]
+    pub enum OrderOpt {
+        Limit,
+        Market
+    }
+
     // Theo dõi trạng thái của order
     #[derive(Encode, Decode, Clone, Copy, PartialEq, Eq, TypeInfo, RuntimeDebug)]
     pub enum OrderStatus {
@@ -89,10 +95,10 @@ pub mod pallet {
         Canceled                // Hủy
     }
 
-    // struct LimitOrder để quản lý các lệnh Limit
+    // struct Order để quản lý các lệnh Limit
     #[derive(Encode, Decode, Clone, PartialEq, Eq, TypeInfo, RuntimeDebug)]
 	#[scale_info(skip_type_params(T))]
-    pub struct LimitOrder<T: Config>{
+    pub struct Order<T: Config>{
         pub hash: T::Hash,                      // order_hash
         pub base: T::Hash,                      // base_token_hash
         pub quote: T::Hash,                     // quote_token_hash
@@ -104,18 +110,19 @@ pub mod pallet {
         pub remained_sell_amount: Balance<T>,   // lượng bán còn lại
         pub remained_buy_amount: Balance<T>,    // lượng mua còn lại
 
+        pub oopt: OrderOpt,                     // Limit / Market
         pub otype: OrderType,                   // Buy / Sell
         pub status: OrderStatus                 // trạng thái lệnh
     }
-    impl<T: Config> LimitOrder<T> {
-        fn new(base: T::Hash, quote: T::Hash, owner: T::AccountId, price: T::Price, sell_amount:Balance<T>, buy_amount: Balance<T>, otype: OrderType) -> Self {
+    impl<T: Config> Order<T> {
+        fn new(base: T::Hash, quote: T::Hash, owner: T::AccountId, price: T::Price, sell_amount:Balance<T>, buy_amount: Balance<T>, oopt: OrderOpt, otype: OrderType) -> Self {
             // create order_hash
             let nonce = <Nonce<T>>::get();
             let random = T::TradeRandom::random_seed().0;
-            let hash = (base, quote, owner.clone(), price, sell_amount, buy_amount, otype, 
+            let hash = (base, quote, owner.clone(), price, sell_amount, buy_amount, oopt, otype, 
                                              random, nonce, frame_system::Pallet::<T>::block_number()).using_encoded(T::Hashing::hash);
             
-            LimitOrder { hash, base, quote, owner, price, sell_amount, buy_amount, remained_sell_amount: sell_amount, remained_buy_amount: buy_amount, otype, status: OrderStatus::Created }
+            Order { hash, base, quote, owner, price, sell_amount, buy_amount, remained_sell_amount: sell_amount, remained_buy_amount: buy_amount, oopt, otype, status: OrderStatus::Created }
         }
 
         // check trạng thái order đã finish => đã Filled hoặc Canceled
@@ -143,7 +150,7 @@ pub mod pallet {
         quote_amount: Balance<T>        // số lượng quote_token giao dịch
     }
     impl<T: Config> Trade<T> {
-        fn new(base: T::Hash, quote: T::Hash, maker_order: &LimitOrder<T>, taker_order: &LimitOrder<T>, base_amount: Balance<T>, quote_amount: Balance<T>) -> Self {
+        fn new(base: T::Hash, quote: T::Hash, maker_order: &Order<T>, taker_order: &Order<T>, base_amount: Balance<T>, quote_amount: Balance<T>) -> Self {
             // create trade hash
             let nonce = <Nonce<T>>::get();
             let random = T::TradeRandom::random_seed().0;
@@ -202,8 +209,8 @@ pub mod pallet {
 
     #[pallet::storage]
     #[pallet::getter(fn orders)]
-    // order_hash => LimitOrder
-    pub type Orders<T: Config> = StorageMap<_, Blake2_128Concat, T::Hash, LimitOrder<T>>;
+    // order_hash => Order
+    pub type Orders<T: Config> = StorageMap<_, Blake2_128Concat, T::Hash, Order<T>>;
 
     #[pallet::storage]
     #[pallet::getter(fn owned_orders)]
@@ -434,7 +441,7 @@ pub mod pallet {
             base_token: T::Hash,
             quote_token: T::Hash,
             order_hash: T::Hash,
-            limit_order: LimitOrder<T>
+            limit_order: Order<T>
         },
         // emit khi trade được tạo => (người tạo, base_token, quote_token, trade_hash, trade)
         TradeCreated {
@@ -448,13 +455,17 @@ pub mod pallet {
         OrderCanceled {
             owner: T::AccountId,
             order_hash: T::Hash
-        }
+        },
     }
 
 	#[pallet::error]
 	pub enum Error<T> {
         /// Price bounds check failed
 		BoundsCheckFailed,
+		BoundsCheckFailedPrice,
+		BoundsCheckFailedAmount,
+		BoundsCheckFailedAmount2,
+		BoundsCheckFailedAmountCounter,
 		/// Price length check failed
 		PriceLengthCheckFailed,
 		/// Number cast error
@@ -500,9 +511,13 @@ pub mod pallet {
         }
 
         #[pallet::weight(1_000_000)]
-        pub fn create_limit_order(origin: OriginFor<T>, base: T::Hash, quote: T::Hash, otype: OrderType, price: T::Price, sell_amount: Balance<T>) -> DispatchResult {
+        pub fn create_order(origin: OriginFor<T>, base: T::Hash, quote: T::Hash, oopt: OrderOpt, otype: OrderType, price: T::Price, sell_amount: Balance<T>) -> DispatchResult {
             let sender = ensure_signed(origin)?;
-            Self::do_create_limit_order(sender, base, quote, otype, price, sell_amount)
+            if oopt == OrderOpt::Limit {
+                Self::do_create_limit_order(sender, base, quote, otype, price, sell_amount)
+            } else {
+                Self::do_create_market_order(sender, base, quote, otype, sell_amount)
+            }
         }
 
         // #[pallet::weight(100_000_000)]
@@ -689,11 +704,11 @@ pub mod pallet {
                 => Đặt lệnh BUY  => mình đang bán BUSD, và mua BTC
                 => Đặt lệnh SELL => mình đang bán BTC, và mua BUSD
                 
-                Nên trong 1 LimitOrder luôn có sell_amount và buy_amount, trong đó:
+                Nên trong 1 Order luôn có sell_amount và buy_amount, trong đó:
                 => sell_amount: là số lượng token mình đang bán 
                 => buy_amount: là số lượng token mình đang mua
             */ 
-            let mut order = LimitOrder::new(base, quote, sender.clone(), price, sell_amount, buy_amount, otype);
+            let mut order = Order::new(base, quote, sender.clone(), price, sell_amount, buy_amount, OrderOpt::Limit, otype);
             let hash = order.hash;
 
             // Check số dư và đóng băng số dư của sender
@@ -740,6 +755,48 @@ pub mod pallet {
             Ok(())
         }
 
+        fn do_create_market_order(sender: T::AccountId, base: T::Hash, quote: T::Hash, otype: OrderType, sell_amount: Balance<T>)-> DispatchResult {
+            let tp_hash = Self::ensure_trade_pair(base, quote)?;
+            let head = <OrderList<T>>::read_head(tp_hash);
+            let item_price = Self::next_match_price(&head, !otype);
+            if let Some(price) = item_price {
+                if price != T::Price::min_value() || price != T::Price::max_value() {
+                    if otype == OrderType::Buy {
+                        let temp_price = Self::into_128(price.clone())?;
+                        let temp: Balance<T> = Self::from_128(temp_price/T::PriceFactor::get())?;
+
+                        let sell_amount = sell_amount * temp;
+                        Self::do_create_limit_order(sender.clone(), base, quote, otype, price, sell_amount)?;
+                    } else {
+                        Self::do_create_limit_order(sender.clone(), base, quote, otype, price, sell_amount)?;
+                    }
+                    let index = Self::owned_orders_index(sender.clone()).checked_sub(1).ok_or(<Error<T>>::OverflowError)?;
+                    let o_hash = Self::owned_orders((sender.clone(), index));
+                    if let Some(hash) = o_hash{
+                        let order = Self::orders(hash);
+                        if let Some(mut o) = order {
+                            if !o.is_finished() {
+                                let remained_buy_amount = o.remained_buy_amount;
+                                let remained_sell_amount = o.remained_sell_amount;
+                                o.sell_amount -= remained_sell_amount;
+                                o.buy_amount -= remained_buy_amount;
+                                o.remained_buy_amount = Zero::zero();
+                                o.remained_sell_amount = Zero::zero();
+                                o.status = OrderStatus::Filled;
+                                Orders::insert(hash, o);
+                                if otype == OrderType::Buy {
+                                    Self::do_create_market_order(sender.clone(), base, quote, otype, remained_buy_amount)?;
+                                } else {
+                                    Self::do_create_market_order(sender.clone(), base, quote, otype, remained_sell_amount)?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
         fn do_cancel_limit_order(sender: T::AccountId, order_hash: T::Hash) -> DispatchResult {
             let mut order = Self::orders(order_hash).ok_or(<Error<T>>::NoMatchingOrder)?;
     
@@ -772,7 +829,7 @@ pub mod pallet {
             Ok(())
         }
 
-        fn order_match(tp_hash: T::Hash, order: &mut LimitOrder<T>) -> Result<bool, DispatchError> {
+        fn order_match(tp_hash: T::Hash, order: &mut Order<T>) -> Result<bool, DispatchError> {
             let mut head = <OrderList<T>>::read_head(tp_hash);
     
             let end_item_price;
@@ -814,7 +871,7 @@ pub mod pallet {
     
                 let item_price = item_price.ok_or(<Error<T>>::OrderMatchGetPriceError)?;
     
-                if !Self::price_matched(oprice, otype, item_price) {
+                if !Self::price_matched(oprice, otype, item_price){
                     break
                 }
     
@@ -849,8 +906,8 @@ pub mod pallet {
     
                     pallet_tokens::Pallet::<T>::do_unfreeze(order.owner.clone(), give, give_qty)?;
                     pallet_tokens::Pallet::<T>::do_unfreeze(o.owner.clone(), have, have_qty)?;
-                    pallet_tokens::Pallet::<T>::do_transfer(order.owner.clone(), o.owner.clone(), give, give_qty, None)?;
-                    pallet_tokens::Pallet::<T>::do_transfer(o.owner.clone(), order.owner.clone(), have, have_qty, None)?;
+                    pallet_tokens::Pallet::<T>::do_transfer(order.owner.clone(), o.owner.clone(), give, give_qty)?;
+                    pallet_tokens::Pallet::<T>::do_transfer(o.owner.clone(), order.owner.clone(), have, have_qty)?;
     
                     order.remained_sell_amount = order.remained_sell_amount.checked_sub(&give_qty).ok_or(<Error<T>>::OrderMatchSubstractError)?;
                     order.remained_buy_amount = order.remained_buy_amount.checked_sub(&have_qty).ok_or(<Error<T>>::OrderMatchSubstractError)?;
@@ -938,9 +995,9 @@ pub mod pallet {
         // fn check bound
         fn ensure_bounds(price: T::Price, sell_amount: Balance<T>) -> DispatchResult{
             // check giá đặt phải > 0 và < max của type Price
-            ensure!(price > Zero::zero() && price <= T::Price::max_value(), <Error<T>>::BoundsCheckFailed);
+            ensure!(price > Zero::zero() && price <= T::Price::max_value(), <Error<T>>::BoundsCheckFailedPrice);
             // check số lượng bán phải > 0 và < max của type Balance
-            ensure!(sell_amount > Zero::zero() && sell_amount <= <Balance<T>>::max_value(), <Error<T>>::BoundsCheckFailed);
+            ensure!(sell_amount > Zero::zero() && sell_amount <= <Balance<T>>::max_value(), <Error<T>>::BoundsCheckFailedAmount);
             Ok(())
         }
 
@@ -968,8 +1025,8 @@ pub mod pallet {
                 }
             }
 
-            ensure!(amount_u256 == amount_v2, <Error<T>>::BoundsCheckFailed);
-            ensure!(counterparty_amount != 0.into() && counterparty_amount <= max_balance_u256, <Error<T>>::BoundsCheckFailed);
+            ensure!(amount_u256 == amount_v2, <Error<T>>::BoundsCheckFailedAmount2);
+            ensure!(counterparty_amount != 0.into() && counterparty_amount <= max_balance_u256, <Error<T>>::BoundsCheckFailedAmountCounter);
 
             // change to u128
             let result: u128 = counterparty_amount.try_into().map_err(|_| <Error<T>>::OverflowError)?;
@@ -996,7 +1053,7 @@ pub mod pallet {
         }
     
         // fn này để tính toán lại số token_base và quote sau khi khớp lệnh giao dịch: maker là lệnh tạo trước, taker là lệnh tạo sau
-        fn calculate_ex_amount(maker_order: &LimitOrder<T>, taker_order: &LimitOrder<T>) -> Result<(Balance<T>, Balance<T>), Error<T>> {
+        fn calculate_ex_amount(maker_order: &Order<T>, taker_order: &Order<T>) -> Result<(Balance<T>, Balance<T>), Error<T>> {
             let buyer_order;
             let seller_order;
             if taker_order.otype == OrderType::Buy {
