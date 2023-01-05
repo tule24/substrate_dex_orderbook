@@ -182,7 +182,7 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn linked_item)]
     // Là type S bên file linked_price_list 
-    pub type LinkedItemList<T: Config> = StorageMap<_, Blake2_128Concat, (T::Hash, Option<T::Price>), OrderItem<T>>; 
+    pub type LinkedItemList<T: Config> = StorageDoubleMap<_, Blake2_128Concat, T::Hash, Blake2_128Concat, Option<T::Price>, OrderItem<T>>; 
 
     #[pallet::storage]
 	#[pallet::getter(fn nonce)]
@@ -215,7 +215,7 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn owned_orders)]
     // (account_id, index) -> order_hash 
-    pub type OwnedOrders<T: Config> = StorageMap<_, Blake2_128Concat, (T::AccountId, u64), T::Hash>;
+    pub type OwnedOrders<T: Config> = StorageDoubleMap<_, Blake2_128Concat, T::AccountId, Blake2_128Concat, u64, T::Hash>;
 
     #[pallet::storage]
     #[pallet::getter(fn owned_orders_index)]
@@ -225,7 +225,7 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn order_owned_trades)]
     // (order_hash, index) => trade_hash
-    pub type OrderOwnedTrades<T: Config> = StorageMap<_, Blake2_128Concat, (T::Hash, u64), T::Hash>;
+    pub type OrderOwnedTrades<T: Config> = StorageDoubleMap<_, Blake2_128Concat, T::Hash, Blake2_128Concat, u64, T::Hash>;
 
     #[pallet::storage]
     #[pallet::getter(fn order_owned_trades_index)]
@@ -235,7 +235,7 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn trade_pair_owned_order)]
     // (tp_hash, index) => order_hash
-    pub type TradePairOwnedOrders<T: Config> = StorageMap<_, Blake2_128Concat, (T::Hash, u64), T::Hash>;
+    pub type TradePairOwnedOrders<T: Config> = StorageDoubleMap<_, Blake2_128Concat, T::Hash, Blake2_128Concat, u64, T::Hash>;
 
     #[pallet::storage]
     #[pallet::getter(fn trade_pair_owned_order_index)]
@@ -250,7 +250,7 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn owned_trades)]
     // (account_id, index) => trade_hash
-    pub type OwnedTrades<T: Config> = StorageMap<_, Blake2_128Concat, (T::AccountId, u64), T::Hash>;
+    pub type OwnedTrades<T: Config> = StorageDoubleMap<_, Blake2_128Concat, T::AccountId, Blake2_128Concat, u64, T::Hash>;
 
     #[pallet::storage]
     #[pallet::getter(fn owned_trades_index)]
@@ -260,7 +260,7 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn owned_tp_trades)]
     // (account_id, tp_hash, index) => trade_hash
-    pub type OwnedTPTrades<T: Config> = StorageMap<_, Blake2_128Concat, (T::AccountId, T::Hash, u64), T::Hash>;
+    pub type OwnedTPTrades<T: Config> = StorageDoubleMap<_, Blake2_128Concat, (T::AccountId, T::Hash), Blake2_128Concat, u64, T::Hash>;
 
     #[pallet::storage]
     #[pallet::getter(fn owned_tp_trades_index)]
@@ -280,7 +280,7 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn trade_pair_owned_trades)]
     // (tp_hash, index) => trade_hash
-    pub type TradePairOwnedTrades<T: Config> = StorageMap<_, Blake2_128Concat, (T::Hash, u64), T::Hash>;
+    pub type TradePairOwnedTrades<T: Config> = StorageDoubleMap<_, Blake2_128Concat, T::Hash, Blake2_128Concat, u64, T::Hash>;
 
     #[pallet::storage]
     #[pallet::getter(fn trade_pair_owned_trades_index)]
@@ -317,7 +317,7 @@ pub mod pallet {
         type C = Option<T>;
         fn add_trade(order_hash: Self::A, trade_hash: Self::B, _: Self::C) -> DispatchResult{
             let index = <OrderOwnedTradesIndex<T>>::get(&order_hash);
-            Self::insert((order_hash.clone(), index), trade_hash);
+            Self::insert(order_hash.clone(), index, trade_hash);
             let new_index = index.checked_add(1).ok_or(ArithmeticError::Overflow)?;
             <OrderOwnedTradesIndex<T>>::insert(order_hash, new_index);
             Ok(())
@@ -329,7 +329,7 @@ pub mod pallet {
         type C = Option<T>;
         fn add_trade(account_id: Self::A, trade_hash: Self::B, _: Self::C) -> DispatchResult{
             let index = <OwnedTradesIndex<T>>::get(&account_id);
-            Self::insert((account_id.clone(), index), trade_hash);
+            Self::insert(account_id.clone(), index, trade_hash);
             let new_index = index.checked_add(1).ok_or(ArithmeticError::Overflow)?;
             <OwnedTradesIndex<T>>::insert(account_id, new_index);
             Ok(())
@@ -341,7 +341,7 @@ pub mod pallet {
         type C = Option<T>;
         fn add_trade(tp_hash: Self::A, trade_hash: Self::B, _: Self::C) -> DispatchResult{
             let index = <TradePairOwnedTradesIndex<T>>::get(&tp_hash);
-            Self::insert((tp_hash.clone(), index), trade_hash);
+            Self::insert(tp_hash.clone(), index, trade_hash);
             let new_index = index.checked_add(1).ok_or(ArithmeticError::Overflow)?;
             <TradePairOwnedTradesIndex<T>>::insert(tp_hash, new_index);
             Ok(())
@@ -353,7 +353,7 @@ pub mod pallet {
         type C = T::Hash;
         fn add_trade(account_id: Self::A, tp_hash: Self::B, trade_hash: Self::C) -> DispatchResult{
             let index = <OwnedTPTradesIndex<T>>::get((account_id.clone(), tp_hash));
-            Self::insert((account_id.clone(), tp_hash, index), trade_hash);
+            Self::insert((account_id.clone(), tp_hash), index, trade_hash);
             let new_index = index.checked_add(1).ok_or(ArithmeticError::Overflow)?;
             <OwnedTPTradesIndex<T>>::insert((account_id.clone(), tp_hash), new_index);
             Ok(())
@@ -724,12 +724,12 @@ pub mod pallet {
              <OwnedTPOpenedOrders<T>>::add_order(sender.clone(), tp_hash, order.hash);
 
              let owned_index = Self::owned_orders_index(sender.clone());
-            OwnedOrders::<T>::insert((sender.clone(), owned_index), hash);
+            OwnedOrders::<T>::insert(sender.clone(), owned_index, hash);
             let new_owned_index = owned_index.checked_add(1).ok_or(ArithmeticError::Overflow)?;
             OwnedOrdersIndex::<T>::insert(sender.clone(), new_owned_index);
 
             let tp_owned_index = Self::trade_pair_owned_order_index(tp_hash);
-            TradePairOwnedOrders::<T>::insert((tp_hash, tp_owned_index), hash);
+            TradePairOwnedOrders::<T>::insert(tp_hash, tp_owned_index, hash);
             let new_tp_owned_index = tp_owned_index.checked_add(1).ok_or(ArithmeticError::Overflow)?;
             TradePairOwnedOrdersIndex::<T>::insert(tp_hash, new_tp_owned_index);
 
@@ -771,7 +771,7 @@ pub mod pallet {
                         Self::do_create_limit_order(sender.clone(), base, quote, otype, price, sell_amount)?;
                     }
                     let index = Self::owned_orders_index(sender.clone()).checked_sub(1).ok_or(<Error<T>>::OverflowError)?;
-                    let o_hash = Self::owned_orders((sender.clone(), index));
+                    let o_hash = Self::owned_orders(sender.clone(), index);
                     if let Some(hash) = o_hash{
                         let order = Self::orders(hash);
                         if let Some(mut o) = order {
@@ -876,7 +876,7 @@ pub mod pallet {
                 }
     
                 // Lúc này item_price này đã khớp với order_price => lấy Price_item tại mức giá này ra và check list order
-                let item = <LinkedItemList<T>>::get((tp_hash, Some(item_price))).ok_or(<Error<T>>::OrderMatchGetLinkedListItemError)?;
+                let item = <LinkedItemList<T>>::get(tp_hash, Some(item_price)).ok_or(<Error<T>>::OrderMatchGetLinkedListItemError)?;
                 for ohash in item.orders.iter() {
     
                     let mut o = Self::orders(ohash).ok_or(<Error<T>>::OrderMatchGetOrderError)?;

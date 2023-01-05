@@ -9,7 +9,7 @@ use frame_support::{
         borrow::Borrow
     },
     inherent::Vec,
-    StorageMap, RuntimeDebug, Parameter,
+    StorageDoubleMap, RuntimeDebug, Parameter, 
 };
 use scale_info::TypeInfo;
 pub use crate as trade;
@@ -43,7 +43,7 @@ where
     // config của mod trade
     T: trade::Config,
     // Mapping token_hash => mức giá => price_item tại mức giá đó
-    S: StorageMap<(P1, Option<P2>), PriceItem<P1, P2, P3>, Query = Option<PriceItem<P1, P2, P3>>>,
+    S: StorageDoubleMap<P1, Option<P2>, PriceItem<P1, P2, P3>, Query = Option<PriceItem<P1, P2, P3>>>,
     // P1, P2, P3 tương tự như struct PriceItem
     P1: EncodeLike + Encode + Decode + Clone + Copy + PartialEq + Borrow<<T as frame_system::Config>::Hash>,
     P2: Parameter + Default + AtLeast32Bit + Bounded + Copy + EncodeLike + Encode + Decode,
@@ -95,7 +95,7 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
 
     // Get dữ liệu từ node, nếu chưa có thì khởi tạo 1 circular_linked_list mới rồi trả về node head
     pub fn read(thash: P1, price: Option<P2>) -> PriceItem<P1, P2, P3> {
-        S::get((thash, price)).unwrap_or_else(|| {
+        S::get(thash, price).unwrap_or_else(|| {
             let bottom = PriceItem {
                 prev: Some(P2::max_value()),
                 next: None,
@@ -132,13 +132,13 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
 
     // fn dùng để insert các mapping
     pub fn write(thash: P1, price: Option<P2>, item: PriceItem<P1, P2, P3>) {
-        S::insert((thash, price), item);
+        S::insert(thash, price, item);
     }
 
     // fn dùng để update khi có order
     pub fn append(thash: P1, price: P2, ohash: P1, sell_amount: P3, buy_amount: P3, otype: OrderType) {
         // lấy PriceItem từ list ra
-        let item = S::get((thash, Some(price)));
+        let item = S::get(thash, Some(price));
 
         match item {
             Some(mut item) => {  // Nếu PriceItem đã tồn tại, mình chỉ cần update amount và push order_hash vô
@@ -234,14 +234,14 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
 
     // fn remove 1 PriceItem khỏi list, take item đó ra và update lại pre, next của các item bên cạnh
     pub fn remove_item(thash: P1, price: P2) {
-        if let Some(item) = S::take((thash, Some(price))) {
-            S::mutate((thash, item.prev), |_item| {
+        if let Some(item) = S::take(thash, Some(price)) {
+            S::mutate(thash, item.prev, |_item| {
                 if let Some(x) = _item {
                     x.next = item.next;
                 }
             });
 
-            S::mutate((thash, item.next), |_item| {
+            S::mutate(thash, item.next, |_item| {
                 if let Some(x) = _item {
                     x.prev = item.prev;
                 }
@@ -251,7 +251,7 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
 
     // fn remove order khỏi orders list
     pub fn remove_order(thash: P1, price: P2, ohash: P1, sell_amount: P3, buy_amount: P3) -> DispatchResult{
-        let item = S::get((thash, Some(price)));
+        let item = S::get(thash, Some(price));
         match item {
             Some(mut item) => {
                 ensure!(item.orders.contains(&ohash), "Cancel the order but it not exists in orders list");
@@ -272,7 +272,7 @@ price_list:  |  BOTTOM:          |            |  PriceItem:        |            
 
     // fn remove order theo thứ tự từ trên xuống tại 1 PriceItem khi khớp giá
     pub fn remove_orders_in_one_item(thash: P1, price: P2) -> DispatchResult {
-        match S::get((thash, Some(price))) {
+        match S::get(thash, Some(price)) {
             Some(mut item) => {
                 while item.orders.len() > 0 {
                     let ohash = item.orders.get(0).ok_or("Cannot get order hash")?;
